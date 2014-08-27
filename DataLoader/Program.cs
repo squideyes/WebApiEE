@@ -37,7 +37,13 @@ namespace DataLoader
         {
             var startedOn = DateTime.UtcNow;
 
-            var baseUri = new Uri("http://webapiee.azurewebsites.net/");
+            // This isn't working right now, for some reason
+            // var baseUri = new Uri("http://webapiee.azurewebsites.net/");
+
+            // The local instance works just fine, although you may need to 
+            // run "Update-Database" in the Package Manager Console, if you 
+            // haven't done so before
+            var baseUri = new Uri("http://localhost:63742/");
 
             Console.Write("Deleting Countries and Cities...");
 
