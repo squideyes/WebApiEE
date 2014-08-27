@@ -17,6 +17,16 @@ namespace WebApiEE.Controllers
     {
         private ApplicationDbContext db = new ApplicationDbContext();
 
+        // DELETE: api/Countries
+        public async Task<IHttpActionResult> DeleteCountries()
+        {
+            await db.Database.ExecuteSqlCommandAsync("TRUNCATE TABLE Cities");
+
+            await db.Database.ExecuteSqlCommandAsync("DELETE FROM Countries");
+
+            return Ok();
+        }
+
         // GET: api/Countries
         public IQueryable<Country> GetCountries()
         {
