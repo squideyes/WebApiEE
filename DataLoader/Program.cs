@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
+using System.Xml.Linq;
 using WebApiEE.Models;
 
 namespace DataLoader
@@ -51,83 +52,115 @@ namespace DataLoader
             Console.WriteLine("DONE!");
             Console.WriteLine();
 
-            var countryLookup = new Dictionary<string, int>();
+            var doc = XDocument.Parse(Properties.Resources.Data);
 
-            var citiesToPost = new List<City>();
+            var countries = new List<Country>();
 
-            int totalCountries;
+            int total = 0;
 
-            using (var db = new DB.DataContext())
+            foreach (var xCountry in doc.Element("data").Elements("country"))
             {
-                int countriesPosted = 0;
+                total++;
 
-                totalCountries = db.Countries.Count();
-
-                foreach (var dbCountry in db.Countries)
+                var country = new Country()
                 {
-                    var countryToPost = new Country()
+                    Area = (int)xCountry.Attribute("area"),
+                    Capital = xCountry.Attribute("capital").Value,
+                    Code = xCountry.Attribute("code").Value,
+                    Name = xCountry.Attribute("name").Value,
+                    Population = (int)xCountry.Attribute("population"),
+                    Province = xCountry.Attribute("province").Value,
+                    Cities = new List<City>()
+                };
+
+                countries.Add(country);
+
+                foreach (var xCity in xCountry.Elements("city"))
+                {
+                    total++;
+
+                    country.Cities.Add(new City()
                     {
-                        Name = dbCountry.Name,
-                        Code = dbCountry.Code,
-                        Capital = dbCountry.Capital,
-                        Area = dbCountry.Area,
-                        Population = dbCountry.Population,
-                        Province = dbCountry.Province
-                    };
-
-                    var countryWithId = await Post(
-                        countryToPost, new Uri(baseUri, "/api/Countries"));
-
-                    Console.WriteLine("{0:000} of {1:000} - Posted: {2}" ,
-                        ++countriesPosted, totalCountries, countryToPost.Name);
-
-                    countryLookup.Add(countryWithId.Code, countryWithId.Id);
-
-                    foreach (var dbCity in dbCountry.Cities)
-                    {
-                        var city = new City()
-                        {
-                            CountryId = countryWithId.Id,
-                            Name = dbCity.Name,
-                            Population = dbCity.Population
-                        };
-
-                        citiesToPost.Add(city);
-                    }
+                        Name = xCity.Attribute("name").Value,
+                        Population = (int)xCity.Attribute("population")
+                    });
                 }
             };
 
             Console.WriteLine();
 
-            long citiesPosted = 0;
+            long count = 0;
 
-            var poster = new ActionBlock<City>(
-                async cityToPost =>
+            var getCountryThenDispatch = new TransformManyBlock<Country, Tuple<Country, City>>(
+                async countryToPost =>
                 {
-                    await Post(cityToPost, new Uri(baseUri, "/api/Cities"));
+                    var cities = countryToPost.Cities;
 
-                    var posted = Interlocked.Increment(ref citiesPosted);
+                    countryToPost.Cities = null;
 
-                    Console.WriteLine("{0:000} of {1:000} - Posted: {2}",
-                        citiesPosted, citiesToPost.Count, cityToPost.Name);
+                    var countryWithId = await Post(
+                        countryToPost, new Uri(baseUri, "/api/Countries"));
+
+                    var c = Interlocked.Increment(ref count);
+
+                    Console.WriteLine("{0:0000} of {1:0000} - Posted: {2} ",
+                        c, total, countryToPost.Name);
+
+                    return cities.Select(city => new Tuple<Country, City>(countryWithId, city));
                 },
                 new ExecutionDataflowBlockOptions()
                 {
+                    MaxDegreeOfParallelism = 2
+                });
+
+            var postCity = new ActionBlock<Tuple<Country, City>>(
+                async tuple =>
+                {
+                    tuple.Item2.CountryId = tuple.Item1.Id;
+
+                    await Post(tuple.Item2, new Uri(baseUri, "/api/Cities"));
+
+                    var c = Interlocked.Increment(ref count);
+
+                    Console.WriteLine("{0:0000} of {1:0000} - Posted: {2} / {3}",
+                        c, total, tuple.Item1.Name, tuple.Item2.Name);
+                },
+                new ExecutionDataflowBlockOptions()
+                {
+                    MaxMessagesPerTask = 24,
+                    BoundedCapacity = 24,
                     MaxDegreeOfParallelism = Environment.ProcessorCount
                 });
 
-            citiesToPost.ForEach(cityToPost => poster.Post(cityToPost));
+            getCountryThenDispatch.LinkTo(postCity);
 
-            poster.Complete();
+            getCountryThenDispatch.HandleCompletion(postCity);
 
-            poster.Completion.Wait();
+            countries.ForEach(country => getCountryThenDispatch.Post(country));
 
-            var elapsed = DateTime.UtcNow - startedOn;
+            getCountryThenDispatch.Complete();
 
-            Console.WriteLine();
+            try
+            {
+                await postCity.Completion;
 
-            Console.WriteLine("Posted {0:N0} countries and {1:N0} cities in {2}",
-                totalCountries, citiesToPost.Count, elapsed);
+                Console.WriteLine();
+
+                Console.WriteLine("Posted {0:N0} Countries/Cities in {1:N2} seconds!",
+                    total, (DateTime.UtcNow - startedOn).TotalMilliseconds / 1000.0);
+            }
+            catch (AggregateException errors)
+            {
+                Console.WriteLine();
+
+                foreach (var error in errors.InnerExceptions)
+                    Console.WriteLine("Error: " + error.Message);
+            }
+            catch (Exception error)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Error: " + error.Message);
+            }
         }
 
         public static async Task<T> Post<T>(T instance, Uri serviceUri)
